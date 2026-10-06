@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay · Devin workspace</title>
+<meta name="description" content="A local coding workspace powered by Devin.">
+<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css">
+<script src="/app.js" type="module"></script>
+</head>
+<body>
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="brand"><span class="mark">⌘</span><strong>Relay</strong><span class="brand-caption">for Devin</span><button class="icon mobile-only" id="close-sidebar" aria-label="Close sidebar">×</button></div>
+  <button id="new-task" class="nav-action"><span>＋</span> New task <kbd>⌘ N</kbd></button>
+  <label class="search"><span>⌕</span><input id="search" placeholder="Search tasks" aria-label="Search tasks"><kbd>⌘ K</kbd></label>
+  <div class="section-label">Tasks <button id="refresh" class="icon" aria-label="Refresh tasks" title="Refresh tasks">↻</button></div>
+  <nav id="sessions" aria-label="Devin sessions"><p class="sidebar-empty">Your coding tasks will appear here.</p></nav>
+  <button id="more-sessions" class="quiet" hidden>Load more tasks</button>
+  <div class="sidebar-bottom"><button id="settings" class="connection"><span id="connection-indicator" class="connection-dot"></span><span><strong id="connection-title">Connect Devin</strong><small id="connection-subtitle">Bring your own account</small></span><span class="settings-glyph">⚙</span></button><div class="sidebar-footer"><span>Local workspace</span><button id="theme" class="icon" aria-label="Toggle color theme" title="Toggle color theme">◐</button></div></div>
+</aside>
+<main>
+  <header class="topbar"><button class="icon mobile-only" id="open-sidebar" aria-label="Open sidebar">☰</button><div class="breadcrumb"><span>Workspace</span><span>/</span><strong id="task-title">New task</strong></div><div class="top-actions"><span id="mode-badge" class="badge">Not connected</span><button id="details-toggle" class="quiet" aria-expanded="false">Session details</button></div></header>
+  <div id="notice" role="alert" hidden><span></span><button class="icon" aria-label="Dismiss notification">×</button></div>
+  <div class="work-area">
+    <section class="conversation">
+      <div id="welcome" class="welcome"><span class="hero-mark">⌘</span><p class="eyebrow">YOUR CODING WORKSPACE</p><h1>What should we build?</h1><p class="intro">Give Devin a task. Keep the conversation here.</p><div class="suggestions"><button data-prompt="Explore the repository and explain its architecture. Identify the main entry points and how to run the tests."><span>⌕</span><strong>Understand a codebase</strong><small>Find the architecture and entry points</small></button><button data-prompt="Investigate and fix this bug. Start by reproducing it, then make the smallest fix and run the relevant tests:\n\n"><span>⌁</span><strong>Fix a bug</strong><small>Reproduce, patch, and verify</small></button><button data-prompt="Implement this feature. Review the existing patterns first, then make the change and test the behavior:\n\n"><span>＋</span><strong>Build something</strong><small>Turn an idea into a working change</small></button></div><button id="try-demo" class="demo-link">Explore the offline demo</button></div>
+      <div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="polite" hidden></div>
+      <div id="permissions" class="permission-list" aria-live="polite" hidden></div>
+      <div id="activity" class="activity" hidden><span class="pulse"></span><span></span></div>
+      <div class="composer-wrap">
+        <form id="composer" class="composer">
+          <label for="prompt" class="sr-only">Task or follow-up message</label><textarea id="prompt" rows="3" placeholder="Describe a task, ask a question, or share context…" maxlength="100000" required></textarea>
+          <div class="composer-toolbar"><div class="composer-options"><span class="engine"><span class="engine-icon">D</span> Devin</span><label class="repo-control"><span>⑂</span><input id="repo" placeholder="owner/repository" aria-label="Repository (owner/repository)" autocomplete="off"></label><label class="acu-control"><input id="acu" type="number" min="1" max="1000" value="10" aria-label="Maximum ACU limit"> ACU max</label></div><button id="send" class="send" type="submit" aria-label="Send task" title="Send task">↑</button></div>
+        </form>
+        <div class="composer-footnote"><span id="composer-hint">Runs in Devin’s environment · Repository optional</span><span>Enter to send <span class="key-separator">·</span> ⇧ Enter for a new line</span></div>
+      </div>
+    </section>
+    <aside class="details" id="details" aria-label="Session details" hidden><div class="details-heading"><strong>Session details</strong><button id="close-details" class="icon" aria-label="Close session details">×</button></div><div id="details-content"></div></aside>
+  </div>
+</main>
+</div>
+<dialog id="connection-dialog"><div class="dialog-heading"><span class="mark">⌘</span><button type="button" id="close-settings" class="icon" aria-label="Close connection settings">×</button></div><h2>Connect to Devin</h2>
+<div class="connection-tabs" role="tablist" aria-label="Connection method"><button id="cli-tab" role="tab" aria-selected="true" aria-controls="cli-panel">Devin sign-in</button><button id="api-tab" role="tab" aria-selected="false" aria-controls="api-panel">API token</button></div>
+<section id="cli-panel" role="tabpanel" aria-labelledby="cli-tab">
+<p>Use your existing Devin account through the official CLI. No Cloud API token required.</p>
+<form id="cli-form"><label>Local project folder<input id="local-cwd" placeholder="/absolute/path/to/project" autocomplete="off" required></label><p class="muted">Devin works on files in this folder. Your CLI account permissions and billing apply.</p><button type="submit" class="primary" id="cli-connect">Use Devin CLI</button></form>
+<div id="cli-auth" hidden><p id="cli-status" role="status"></p><div id="cli-auth-methods"></div><button id="cli-ready" class="quiet" type="button">Continue to workspace</button></div>
+<p class="muted">Already ran <code>devin auth login</code>? The CLI reuses that sign-in. Otherwise, connect above and choose “Log in with browser”. Devin manages and stores its credentials.</p>
+<a href="https://devin.ai/cli" target="_blank" rel="noopener noreferrer" class="doc-link">Install the official Devin CLI ↗</a>
+</section>
+<section id="api-panel" role="tabpanel" aria-labelledby="api-tab" hidden><form id="connection-form"><p>Connect to Devin Cloud with a v3 service-user token or personal access token.</p><label>Organization ID<input id="org-id" placeholder="org-…" autocomplete="off" required></label><label>API token<input id="api-key" type="password" placeholder="Devin service-user token or PAT" autocomplete="off" required></label><p class="muted">API credentials entered here stay in this server’s memory until it exits.</p><button type="submit" class="primary" id="connect-button">Connect Devin Cloud</button><a href="https://docs.devin.ai/api-reference/authentication" target="_blank" rel="noopener noreferrer" class="doc-link">Devin API authentication guide ↗</a></form></section>
+<p id="connection-error" class="error-text" role="alert" hidden></p><div class="dialog-secondary"><button type="button" id="demo-settings" class="quiet">Use offline demo</button><button type="button" id="disconnect" class="quiet">Disconnect</button></div></dialog>
+<dialog id="stop-dialog"><h2>Stop this session?</h2><p>This ends the task in Relay and requests that Devin stop. Start a new task for further work.</p><div class="dialog-secondary"><button id="cancel-stop" class="quiet">Keep working</button><button id="confirm-stop" class="danger">Stop session</button></div></dialog>
+</body>
+</html>
