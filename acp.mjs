@@ -5,6 +5,31 @@ import { randomUUID } from 'node:crypto';
 import { ApiError } from './devin.mjs';
 
 const now = () => Date.now() / 1000;
+const text = (value, max = 500) => typeof value === 'string' ? value.slice(0, max) : '';
+// Flatten ACP select values, which may be a flat list or grouped ({ group, name, options }).
+function selectValues(options) {
+  const out = [];
+  for (const item of Array.isArray(options) ? options : []) {
+    if (Array.isArray(item?.options)) for (const value of item.options) out.push({ ...value, group: text(item.name, 100) });
+    else out.push(item);
+  }
+  return out.filter(item => typeof item?.value === 'string').map(item => ({ value: item.value, name: text(item.name, 120) || item.value, description: text(item.description), group: item.group || '' }));
+}
+// One normalized list of session controls (model, mode, reasoning level…), whichever ACP API the agent uses.
+// Config options are preferred; legacy `models`/`modes` fields are only used when no config options exist.
+export function sessionControls(target) {
+  if (Array.isArray(target?.configOptions) && target.configOptions.length) {
+    return target.configOptions.filter(option => typeof option?.id === 'string' && ['select', 'boolean'].includes(option.type)).map(option => ({
+      id: option.id, name: text(option.name, 120) || option.id, description: text(option.description), category: text(option.category, 60), type: option.type, value: option.currentValue,
+      ...(option.type === 'select' ? { options: selectValues(option.options) } : {}), source: 'config'
+    }));
+  }
+  const controls = [];
+  if (Array.isArray(target?.models?.availableModels) && target.models.availableModels.length) controls.push({ id: 'model', name: 'Model', description: '', category: 'model', type: 'select', value: target.models.currentModelId, options: selectValues(target.models.availableModels.map(m => ({ value: m.modelId, name: m.name, description: m.description }))), source: 'model' });
+  if (Array.isArray(target?.modes?.availableModes) && target.modes.availableModes.length) controls.push({ id: 'mode', name: 'Mode', description: '', category: 'mode', type: 'select', value: target.modes.currentModeId, options: selectValues(target.modes.availableModes.map(m => ({ value: m.id, name: m.name, description: m.description }))), source: 'mode' });
+  return controls;
+}
+const commandList = commands => (Array.isArray(commands) ? commands : []).filter(c => typeof c?.name === 'string' && /^[\w:.-]{1,80}$/.test(c.name)).slice(0, 300).map(c => ({ name: c.name, description: text(c.description), hint: text(c.input?.hint, 200) }));
 export class AcpTransport {
   constructor({ command = process.env.DEVIN_CLI_PATH || 'devin', cwd, spawnImpl = spawn, onNotification = () => {}, onRequest = () => {}, onClose = () => {} } = {}) {
     this.pending = new Map(); this.sequence = 0; this.buffer = ''; this.closed = false;
@@ -12,7 +37,9 @@ export class AcpTransport {
     // Optional isolated CLI profile; otherwise reuse the official CLI's normal sign-in.
     if (process.env.RELAY_DEVIN_DATA_HOME) env.XDG_DATA_HOME = process.env.RELAY_DEVIN_DATA_HOME;
     if (process.env.RELAY_DEVIN_CONFIG_HOME) env.XDG_CONFIG_HOME = process.env.RELAY_DEVIN_CONFIG_HOME;
-    this.child = spawnImpl(command, ['--permission-mode', 'normal', 'acp'], { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Optional default model for every new ACP session (same fuzzy names as /model). Users can still switch per session.
+    const model = process.env.RELAY_DEVIN_MODEL?.trim();
+    this.child = spawnImpl(command, ['--permission-mode', 'normal', 'acp', ...(model ? ['--model', model] : [])], { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     const fail = message => {
       if (this.closed) return;
       this.closed = true;
@@ -67,13 +94,16 @@ export class AcpTransport {
 export class CliClient {
   constructor({ cwd, transportFactory = options => new AcpTransport(options) } = {}) {
     this.cwd = cwd; this.transportFactory = transportFactory; this.sessions = new Map(); this.remote = new Map(); this.history = new Map(); this.permissions = new Map(); this.auth = { state: 'unknown' }; this.closed = false;
+    // A "draft" is an ACP session created ahead of the first message so the new-task composer can offer
+    // Devin's models, modes and slash commands. It becomes the next task's session.
+    this.draft = null; this.draftPromise = null; this.orphans = new Map();
   }
   async initialize() {
     if (!isAbsolute(this.cwd || '')) throw new ApiError(400, 'Enter an absolute local project folder path.');
     try { this.cwd = await realpath(this.cwd); if (!(await stat(this.cwd)).isDirectory()) throw 0; }
     catch { throw new ApiError(400, 'The local project folder does not exist or is not accessible.'); }
     this.transport = this.transportFactory({ cwd: this.cwd, onNotification: message => this.update(message), onRequest: (message, reply) => this.permission(message, reply), onClose: message => this.failed(message) });
-    const result = await this.transport.request('initialize', { protocolVersion: 1, clientInfo: { name: 'relay', title: 'Relay', version: '1.1.0' }, clientCapabilities: {} });
+    const result = await this.transport.request('initialize', { protocolVersion: 1, clientInfo: { name: 'relay', title: 'Relay', version: '1.2.0' }, clientCapabilities: { session: { configOptions: { boolean: {} } } } });
     if (result.protocolVersion !== 1) { this.close(); throw new ApiError(502, 'Unsupported Devin ACP protocol version.'); }
     this.authMethods = (result.authMethods || []).filter(method => !method.type || method.type === 'agent');
     return this;
@@ -89,7 +119,63 @@ export class CliClient {
     return this.info();
   }
   list() { return { items: [...this.sessions.values()].map(s => this.publicSession(s)).sort((a,b) => b.updated_at - a.updated_at), has_next_page: false }; }
-  publicSession(session) { const { remoteId, inFlight, currentMessage, cancelTimer, ...visible } = session; return visible; }
+  publicSession(session) { const { remoteId, inFlight, currentMessage, cancelTimer, configOptions, modes, models, ...visible } = session; return { ...visible, controls: sessionControls(session), commands: session.commands || [] }; }
+  draftInfo() { return { ready: !!this.draft, preparing: !!this.draftPromise && !this.draft, controls: sessionControls(this.draft), commands: this.draft?.commands || [] }; }
+  async newRemote() {
+    const result = await this.transport.request('session/new', { cwd: this.cwd, mcpServers: [] });
+    if (typeof result.sessionId !== 'string' || !result.sessionId) throw new ApiError(502, 'Devin CLI did not return a session ID.');
+    const remote = { remoteId: result.sessionId, configOptions: Array.isArray(result.configOptions) ? result.configOptions : null, modes: result.modes || null, models: result.models || null, commands: [] };
+    // Commands or config can arrive before the session/new response is processed.
+    for (const update of this.orphans.get(result.sessionId) || []) this.applyControl(remote, update);
+    this.orphans.delete(result.sessionId); this.auth = { state: 'authenticated' };
+    return remote;
+  }
+  prepare() {
+    if (this.closed) throw new ApiError(409, 'Reconnect the CLI first.');
+    if (this.auth.state === 'pending') throw new ApiError(409, 'Complete browser sign-in first.');
+    if (!this.draftPromise) {
+      const pending = this.newRemote().then(remote => { if (this.draftPromise === pending) this.draft = remote; return remote; });
+      this.draftPromise = pending;
+      pending.catch(() => { if (this.draftPromise === pending) this.draftPromise = null; });
+    }
+    return this.draftPromise.then(() => this.draftInfo());
+  }
+  async takeDraft() {
+    const pending = this.draftPromise; this.draftPromise = null; this.draft = null;
+    const remote = pending ? await pending.catch(() => null) : null;
+    return remote || this.newRemote();
+  }
+  target(id) {
+    if (id !== 'draft') { const session = this.session(id); if (['exit', 'error'].includes(session.status)) throw new ApiError(409, 'This local session has ended.'); return session; }
+    if (!this.draft) throw new ApiError(409, 'Devin is still preparing the new task. Try again in a moment.');
+    return this.draft;
+  }
+  async configure(id, configId, value) {
+    if (this.closed) throw new ApiError(409, 'Reconnect the CLI first.');
+    const target = this.target(id), control = sessionControls(target).find(item => item.id === configId);
+    if (!control) throw new ApiError(400, 'Choose a setting offered by Devin.');
+    if (control.type === 'boolean' ? typeof value !== 'boolean' : !control.options.some(option => option.value === value)) throw new ApiError(400, 'Choose a value offered by Devin.');
+    const sessionId = target.remoteId;
+    if (control.source === 'config') {
+      const result = await this.transport.request('session/set_config_option', { sessionId, configId, value, ...(control.type === 'boolean' ? { type: 'boolean' } : {}) });
+      if (Array.isArray(result.configOptions)) target.configOptions = result.configOptions;
+      else { const option = target.configOptions.find(item => item.id === configId); if (option) option.currentValue = value; }
+    } else if (control.source === 'model') {
+      await this.transport.request('session/set_model', { sessionId, modelId: value }); target.models.currentModelId = value;
+    } else {
+      await this.transport.request('session/set_mode', { sessionId, modeId: value }); target.modes.currentModeId = value;
+    }
+    if (target.session_id) target.updated_at = now();
+    return { controls: sessionControls(target) };
+  }
+  applyControl(target, update) {
+    if (update.sessionUpdate === 'available_commands_update') target.commands = commandList(update.availableCommands);
+    else if (update.sessionUpdate === 'config_option_update' && Array.isArray(update.configOptions)) target.configOptions = update.configOptions;
+    else if (update.sessionUpdate === 'current_mode_update' && target.modes && typeof update.currentModeId === 'string') target.modes.currentModeId = update.currentModeId;
+    else if (update.sessionUpdate === 'session_info_update' && target.session_id && typeof update.title === 'string' && update.title.trim()) target.title = update.title.trim().slice(0, 100);
+    else return false;
+    return true;
+  }
   session(id) { const result = this.sessions.get(id); if (!result) throw new ApiError(404, 'Local session not found.'); return result; }
   get(id) { return this.publicSession(this.session(id)); }
   messages(id) { this.session(id); return { items: this.history.get(id), has_next_page: false }; }
@@ -98,11 +184,10 @@ export class CliClient {
     this.validatePrompt(input.prompt);
     if (this.auth.state === 'pending') throw new ApiError(409, 'Complete browser sign-in first.');
     if (this.closed) throw new ApiError(409, 'Reconnect the CLI before starting a task.');
-    const result = await this.transport.request('session/new', { cwd: this.cwd, mcpServers: [] });
-    if (typeof result.sessionId !== 'string' || !result.sessionId) throw new ApiError(502, 'Devin CLI did not return a session ID.');
+    const remote = await this.takeDraft();
     const id = `local-${randomUUID()}`;
-    const session = { session_id: id, remoteId: result.sessionId, title: input.prompt.trim().split('\n')[0].slice(0,100), status: 'running', status_detail: 'waiting_for_user', created_at: now(), updated_at: now(), pull_requests: [], cwd: this.cwd, provider: 'cli', permissions: [], tools: [], plan: [] };
-    this.sessions.set(id, session); this.remote.set(result.sessionId, id); this.history.set(id, []); this.auth = { state: 'authenticated' };
+    const session = { session_id: id, remoteId: remote.remoteId, title: input.prompt.trim().split('\n')[0].slice(0,100), status: 'running', status_detail: 'waiting_for_user', created_at: now(), updated_at: now(), pull_requests: [], cwd: this.cwd, provider: 'cli', permissions: [], tools: [], plan: [], configOptions: remote.configOptions, modes: remote.modes, models: remote.models, commands: remote.commands };
+    this.sessions.set(id, session); this.remote.set(remote.remoteId, id); this.history.set(id, []);
     this.send(id, input.prompt); return this.publicSession(session);
   }
   validatePrompt(message) { if (typeof message !== 'string' || !message.trim() || message.length > 100000) throw new ApiError(400, 'Enter a message between 1 and 100,000 characters.'); }
@@ -122,9 +207,18 @@ export class CliClient {
   update(message) {
     if (message.method !== 'session/update') return;
     const { sessionId, update } = message.params || {}, localId = this.remote.get(sessionId);
-    if (!localId || !update) return;
+    if (!update) return;
+    if (!localId) {
+      if (this.draft?.remoteId === sessionId) this.applyControl(this.draft, update);
+      else if (typeof sessionId === 'string' && ['available_commands_update', 'config_option_update', 'current_mode_update'].includes(update.sessionUpdate)) {
+        if (!this.orphans.has(sessionId) && this.orphans.size >= 20) this.orphans.delete(this.orphans.keys().next().value);
+        this.orphans.set(sessionId, [...(this.orphans.get(sessionId) || []).slice(-9), update]);
+      }
+      return;
+    }
     const session = this.sessions.get(localId); if (session.status === 'exit') return;
     session.updated_at = now();
+    if (this.applyControl(session, update)) return;
     if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
       const key = update.messageId || session.currentMessage || randomUUID();
       let entry = this.history.get(localId).find(item => item.event_id === key);

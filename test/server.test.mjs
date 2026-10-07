@@ -64,3 +64,18 @@ test('cannot switch away from a CLI with active work or pending sign-in', async 
   await request('/api/connection', 'POST', { mode: 'cli', cwd: '/project' }); active = true;
   assert.equal((await request('/api/connection', 'POST', { mode: 'disconnected' })).status, 409);
 });
+
+test('CLI draft and session settings routes are CLI-only and validated by the client', async t => {
+  const calls = [];
+  const cli = { initialize: async () => {}, info: () => ({ cwd: '/project', auth: { state: 'authenticated' }, authMethods: [] }), close: () => {}, hasWork: () => false, list: () => ({ items: [] }),
+    draftInfo: () => ({ ready: false, controls: [], commands: [] }), prepare: async () => { calls.push(['prepare']); return { ready: true, controls: [{ id: 'model' }], commands: [{ name: 'plan' }] }; },
+    configure: async (...args) => { calls.push(args); return { controls: [] }; } };
+  const { request } = await fixture(t, { cliFactory: () => cli });
+  await request('/api/connection', 'POST', { mode: 'demo' });
+  assert.equal((await request('/api/cli/draft', 'POST', {})).status, 409);
+  await request('/api/connection', 'POST', { mode: 'cli', cwd: '/project' });
+  assert.equal((await request('/api/cli/draft').then(r => r.json())).ready, false);
+  assert.equal((await request('/api/cli/draft', 'POST', {}).then(r => r.json())).commands[0].name, 'plan');
+  assert.equal((await request('/api/sessions/draft/config', 'POST', { configId: 'model', value: 'opus' })).status, 200);
+  assert.deepEqual(calls, [['prepare'], ['draft', 'model', 'opus']]);
+});

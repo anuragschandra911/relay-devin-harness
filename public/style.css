@@ -5,3 +5,15 @@
 .connection-tabs{display:flex;border-bottom:1px solid var(--line);margin:20px 0 10px;gap:12px}.connection-tabs button{padding:10px 8px;font-size:14px;color:var(--muted);border-bottom:2px solid transparent}.connection-tabs button[aria-selected=true]{border-color:var(--text);color:var(--text)}#cli-status{font-size:13px}#cli-ready{width:100%;margin-top:8px}.permission-list{width:calc(100% - 48px);max-width:780px;margin:12px auto}.permission-card{padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--side);margin-bottom:12px}.permission-card h3{font-size:14px;margin:0 0 10px}.permission-card pre{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}.permission-actions{display:flex;flex-wrap:wrap;gap:8px}.permission-actions button{padding:8px 12px;font-size:13px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}.details .tool-entry{border-bottom:1px solid var(--line);padding:8px 0;font-size:12px;line-height:1.6}.tool-entry small{color:var(--muted);display:block}dialog{max-height:90dvh;overflow-y:auto}
 
 .connection>span:nth-child(2){min-width:0}.connection small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.composer-footnote>span:first-child{min-width:0;overflow-wrap:anywhere}
+
+.composer{position:relative}
+.session-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.session-controls label{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+.session-controls select{font:inherit;font-size:12px;color:var(--text);background:var(--hover);border:1px solid var(--line);border-radius:8px;padding:3px 6px;max-width:180px}
+.session-controls select:disabled,.session-controls input:disabled{opacity:.55}
+.slash-menu{position:absolute;left:12px;right:12px;bottom:calc(100% + 6px);max-height:300px;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #0000001f;padding:6px;z-index:5}
+.slash-item{display:flex;gap:10px;align-items:baseline;width:100%;text-align:left;padding:7px 10px;border:0;border-radius:8px;background:none;color:var(--text);font:inherit;font-size:13px;cursor:pointer}
+.slash-item[aria-selected=true],.slash-item:hover{background:var(--hover)}
+.slash-item strong{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;white-space:nowrap}
+.slash-item small{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slash-empty{padding:8px 10px;color:var(--muted);font-size:12px}

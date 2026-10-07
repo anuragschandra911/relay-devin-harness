@@ -29,8 +29,9 @@
       <div id="activity" class="activity" hidden><span class="pulse"></span><span></span></div>
       <div class="composer-wrap">
         <form id="composer" class="composer">
-          <label for="prompt" class="sr-only">Task or follow-up message</label><textarea id="prompt" rows="3" placeholder="Describe a task, ask a question, or share context…" maxlength="100000" required></textarea>
-          <div class="composer-toolbar"><div class="composer-options"><span class="engine"><span class="engine-icon">D</span> Devin</span><label class="repo-control"><span>⑂</span><input id="repo" placeholder="owner/repository" aria-label="Repository (owner/repository)" autocomplete="off"></label><label class="acu-control"><input id="acu" type="number" min="1" max="1000" value="10" aria-label="Maximum ACU limit"> ACU max</label></div><button id="send" class="send" type="submit" aria-label="Send task" title="Send task">↑</button></div>
+          <div id="slash-menu" class="slash-menu" role="listbox" aria-label="Devin slash commands" hidden></div>
+          <label for="prompt" class="sr-only">Task or follow-up message</label><textarea id="prompt" rows="3" role="combobox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false" placeholder="Describe a task, ask a question, or share context…" maxlength="100000" required></textarea>
+          <div class="composer-toolbar"><div class="composer-options"><span class="engine"><span class="engine-icon">D</span> Devin</span><span id="session-controls" class="session-controls" hidden></span><label class="repo-control"><span>⑂</span><input id="repo" placeholder="owner/repository" aria-label="Repository (owner/repository)" autocomplete="off"></label><label class="acu-control"><input id="acu" type="number" min="1" max="1000" value="10" aria-label="Maximum ACU limit"> ACU max</label></div><button id="send" class="send" type="submit" aria-label="Send task" title="Send task">↑</button></div>
         </form>
         <div class="composer-footnote"><span id="composer-hint">Runs in Devin’s environment · Repository optional</span><span>Enter to send <span class="key-separator">·</span> ⇧ Enter for a new line</span></div>
       </div>
