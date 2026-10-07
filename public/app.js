@@ -1,5 +1,5 @@
 const $ = selector => document.querySelector(selector);
-const state = { config: { mode: 'disconnected' }, sessions: [], selected: null, messages: [], cursor: null, busy: false, generation: 0, timer: null, polling: false, failures: 0, messageSignature: '', lastList: 0, drafts: new Map() };
+const state = { config: { mode: 'disconnected' }, sessions: [], selected: null, messages: [], cursor: null, busy: false, generation: 0, timer: null, polling: false, failures: 0, messageSignature: '', lastList: 0, drafts: new Map(), draft: null, draftAuth: null, preparing: false, slash: { open: false, items: [], index: 0 }, configuring: false };
 const escape = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const idOf = session => session.session_id;
 const displayStatus = session => ({ working: 'Working', waiting_for_user: 'Needs your input', waiting_for_approval: session?.provider === 'cli' ? 'Needs your approval' : 'Awaiting approval in Devin', finished: 'Finished', user_request: 'Stopped', inactivity: 'Sleeping' }[session?.status_detail] || session?.status_detail?.replaceAll('_', ' ') || session?.status || 'Ready');
@@ -55,6 +55,9 @@ function renderConversation() {
   $('#prompt').disabled = stopped; $('#send').disabled = state.busy || stopped || (session?.provider === 'cli' && (running(session) || session.status_detail === 'waiting_for_approval'));
   $('#prompt').placeholder = stopped ? 'This session has ended. Start a new task.' : session ? 'Send a follow-up to Devin…' : 'Describe a task, ask a question, or share context…';
   $('#composer-hint').textContent = state.config.mode === 'cli' ? `Local project · ${state.config.cli?.cwd || ''}` : state.config.mode === 'demo' ? 'Offline demo · No code is executed' : session ? 'Messages sync from Devin every 5 seconds' : 'Runs in Devin’s environment · Repository optional';
+  const command = commands().find(c => $('#prompt').value.startsWith(`/${c.name} `) || $('#prompt').value === `/${c.name}`);
+  if (command && !stopped) $('#composer-hint').textContent = `/${command.name} · ${command.hint || command.description}`;
+  renderControls(); renderSlashMenu();
   $('#activity').hidden = !session;
   if (session) { $('#activity span:last-child').textContent = displayStatus(session); $('.pulse').hidden = !running(session); }
   const signature = JSON.stringify(state.messages);
@@ -103,6 +106,7 @@ async function poll() {
   state.polling = true; let delay = state.config.mode === 'cli' ? 1000 : 5000;
   try {
     if (state.config.mode === 'cli') { const generation = state.generation; const config = await api('/config'); if (generation === state.generation) { state.config = config; renderConfig(); } }
+    if (state.config.mode === 'cli' && !state.selected) await refreshDraft();
     if (Date.now() - state.lastList > 30000) await loadSessions();
     await syncSelected(); state.failures = 0;
   } catch (error) {
@@ -121,17 +125,17 @@ function newTask() {
   if (state.busy) return;
   saveDraft(); state.selected = null; state.messages = []; state.messageSignature = null;
   $('#prompt').value = state.drafts.get('new') || ''; renderSessions(); renderConversation();
-  $('#sidebar').classList.remove('open'); $('#prompt').focus(); clearNotice();
+  $('#sidebar').classList.remove('open'); $('#prompt').focus(); clearNotice(); if (!state.draft?.ready) state.draftAuth = null; ensureDraft();
 }
 async function changeConnection(input, keepOpen = false) {
   if (state.busy) throw new Error('Wait for the current task request to finish.');
   setBusy(true);
   try {
     const config = await api('/connection', { method: 'POST', body: JSON.stringify(input) });
-    state.generation++; state.config = config; state.sessions = []; state.selected = null; state.messages = []; state.cursor = null; state.drafts.clear(); state.messageSignature = null;
+    state.generation++; state.config = config; state.draft = null; state.draftAuth = null; state.sessions = []; state.selected = null; state.messages = []; state.cursor = null; state.drafts.clear(); state.messageSignature = null;
     $('#prompt').value = ''; $('#search').value = ''; $('#api-key').value = '';
     renderConfig(); renderSessions(); renderConversation(); clearNotice();
-    if (!keepOpen) $('#connection-dialog').close(); await loadSessions(); schedulePoll();
+    if (!keepOpen) $('#connection-dialog').close(); await loadSessions(); ensureDraft(); schedulePoll();
   } finally { setBusy(false); renderConversation(); }
 }
 $('#composer').addEventListener('submit', async event => {
@@ -144,7 +148,7 @@ $('#composer').addEventListener('submit', async event => {
     if (session) await api(`/sessions/${encodeURIComponent(idOf(session))}/messages`, { method: 'POST', body: JSON.stringify({ message: prompt }) });
     else {
       const created = await api('/sessions', { method: 'POST', body: JSON.stringify({ prompt, repo: $('#repo').value.trim(), max_acu_limit: Number($('#acu').value) }) });
-      state.selected = created; state.sessions.unshift(created);
+      state.selected = created; state.sessions.unshift(created); state.draft = null;
     }
     state.drafts.delete(key);
     if ((!session || idOf(state.selected || {}) === idOf(session)) && $('#prompt').value.trim() === prompt) $('#prompt').value = '';
@@ -154,8 +158,8 @@ $('#composer').addEventListener('submit', async event => {
   } catch (error) { notice(error.message); }
   finally { setBusy(false); renderConversation(); schedulePoll(); $('#prompt').focus(); }
 });
-$('#prompt').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('#composer').requestSubmit(); } });
-$('#prompt').addEventListener('input', () => { $('#prompt').style.height = 'auto'; $('#prompt').style.height = `${Math.min(220, $('#prompt').scrollHeight)}px`; });
+$('#prompt').addEventListener('keydown', event => { if (slashKey(event)) return; if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('#composer').requestSubmit(); } });
+$('#prompt').addEventListener('input', () => { updateSlash(); $('#prompt').style.height = 'auto'; $('#prompt').style.height = `${Math.min(220, $('#prompt').scrollHeight)}px`; });
 $('#new-task').onclick = newTask;
 $('#search').oninput = renderSessions;
 $('#sessions').onclick = event => { const button = event.target.closest('[data-id]'); if (button && !state.busy) selectSession(state.sessions.find(s => idOf(s) === button.dataset.id)); };
@@ -231,4 +235,89 @@ $('#permissions').onclick = async event => {
   try { await api(`/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(button.dataset.permission)}`, { method: 'POST', body: JSON.stringify({ optionId: button.dataset.option }) }); await syncSelected(); }
   catch (error) { button.disabled = false; notice(error.message); }
 };
-try { state.config = await api('/config'); renderConfig(); renderConversation(); await loadSessions(); schedulePoll(); } catch (error) { notice(error.message); }
+
+// ---- Devin session controls (model, mode, reasoning…) and slash commands, advertised by Devin over ACP ----
+const controlTarget = () => state.selected?.provider === 'cli' ? state.selected : !state.selected && state.config.mode === 'cli' ? state.draft : null;
+const targetId = () => state.selected ? idOf(state.selected) : 'draft';
+async function ensureDraft() {
+  const cli = state.config.cli;
+  if (state.config.mode !== 'cli' || state.selected || state.preparing || state.draft?.ready || !cli || cli.closed || cli.auth?.state === 'pending') return;
+  if (state.draftAuth === cli.auth?.state) return; // Already tried for this sign-in state; retry when it changes or on New task.
+  state.preparing = true; state.draftAuth = cli.auth?.state; const generation = state.generation;
+  try { const draft = await api('/cli/draft', { method: 'POST', body: '{}' }); if (generation === state.generation) { state.draft = draft; state.config.cli.auth = { state: 'authenticated' }; state.draftAuth = 'authenticated'; } }
+  catch { /* Not signed in yet or the CLI is busy; the composer still works and creates a session on send. */ }
+  finally { state.preparing = false; if (generation === state.generation) renderConversation(); }
+}
+async function refreshDraft() {
+  if (state.draft?.ready) { const generation = state.generation, draft = await api('/cli/draft'); if (generation === state.generation && !state.selected) { state.draft = draft.ready ? draft : null; renderConversation(); } }
+  else if (state.draftAuth !== state.config.cli?.auth?.state) ensureDraft();
+}
+let controlSignature = '';
+function renderControls() {
+  const container = $('#session-controls'), target = controlTarget(), controls = target?.controls || [];
+  const stopped = state.selected && ['exit', 'error'].includes(state.selected.status);
+  const signature = JSON.stringify([targetId(), controls, stopped, state.configuring]);
+  container.hidden = controls.length === 0;
+  if (signature === controlSignature || container.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return;
+  controlSignature = signature;
+  const disabled = stopped || state.configuring ? 'disabled' : '';
+  container.innerHTML = controls.map(control => {
+    const title = escape(control.description || control.name);
+    if (control.type === 'boolean') return `<label title="${title}"><input type="checkbox" data-config="${escape(control.id)}" ${control.value ? 'checked' : ''} ${disabled}> ${escape(control.name)}</label>`;
+    const groups = new Map();
+    for (const option of control.options || []) { if (!groups.has(option.group)) groups.set(option.group, []); groups.get(option.group).push(option); }
+    const optionHtml = option => `<option value="${escape(option.value)}" ${option.value === control.value ? 'selected' : ''} title="${escape(option.description)}">${escape(option.name)}</option>`;
+    const body = [...groups].map(([group, options]) => group ? `<optgroup label="${escape(group)}">${options.map(optionHtml).join('')}</optgroup>` : options.map(optionHtml).join('')).join('');
+    return `<label title="${title}"><span class="sr-only">${escape(control.name)}</span><select data-config="${escape(control.id)}" aria-label="${escape(control.name)}" ${disabled}>${body}</select></label>`;
+  }).join('');
+}
+$('#session-controls').addEventListener('change', async event => {
+  const input = event.target.closest('[data-config]'); if (!input || state.configuring) return;
+  const target = controlTarget(); if (!target) return;
+  const value = input.type === 'checkbox' ? input.checked : input.value, id = targetId(), generation = state.generation;
+  state.configuring = true; input.blur(); renderControls();
+  try {
+    const result = await api(`/sessions/${encodeURIComponent(id)}/config`, { method: 'POST', body: JSON.stringify({ configId: input.dataset.config, value }) });
+    if (generation === state.generation && targetId() === id) target.controls = result.controls;
+  } catch (error) { notice(`Could not change ${input.closest('label')?.textContent.trim() || 'setting'}: ${error.message}`); }
+  finally { state.configuring = false; controlSignature = ''; renderControls(); }
+});
+function commands() { return controlTarget()?.commands || []; }
+function updateSlash() {
+  const match = $('#prompt').value.match(/^\/([\w:.-]*)$/), list = commands();
+  if (!match || !list.length || $('#prompt').disabled) { closeSlash(); return; }
+  const query = match[1].toLowerCase();
+  const items = list.filter(c => c.name.toLowerCase().includes(query)).sort((a, b) => (b.name.toLowerCase().startsWith(query)) - (a.name.toLowerCase().startsWith(query)) || a.name.localeCompare(b.name));
+  state.slash = { open: true, items, index: Math.min(state.slash.open ? state.slash.index : 0, Math.max(0, items.length - 1)) };
+  renderSlashMenu();
+}
+function closeSlash() { if (!state.slash.open) return; state.slash = { open: false, items: [], index: 0 }; renderSlashMenu(); }
+function renderSlashMenu() {
+  const menu = $('#slash-menu'), { open, items, index } = state.slash;
+  menu.hidden = !open; $('#prompt').setAttribute('aria-expanded', String(open));
+  if (!open) { $('#prompt').removeAttribute('aria-activedescendant'); return; }
+  menu.innerHTML = items.length ? items.map((c, i) => `<button type="button" class="slash-item" role="option" id="slash-${i}" data-command="${escape(c.name)}" aria-selected="${i === index}"><strong>/${escape(c.name)}</strong>${c.hint ? `<small>${escape(c.hint)}</small>` : ''}<small>${escape(c.description)}</small></button>`).join('') : '<p class="slash-empty">No matching Devin command.</p>';
+  if (items.length) { $('#prompt').setAttribute('aria-activedescendant', `slash-${index}`); menu.querySelector(`#slash-${index}`)?.scrollIntoView({ block: 'nearest' }); }
+}
+function chooseCommand(name) {
+  const command = commands().find(c => c.name === name); if (!command) return;
+  $('#prompt').value = `/${command.name} `; closeSlash(); $('#prompt').focus();
+  renderConversation();
+}
+function slashKey(event) {
+  const { open, items, index } = state.slash; if (!open) return false;
+  if (event.key === 'Escape') { event.preventDefault(); closeSlash(); return true; }
+  if (!items.length) return false;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); state.slash.index = (index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; renderSlashMenu(); return true; }
+  if ((event.key === 'Enter' && !event.shiftKey && !event.isComposing) || event.key === 'Tab') {
+    // A complete command with no input hint can be sent directly with Enter.
+    const item = items[index];
+    if (event.key === 'Enter' && $('#prompt').value === `/${item.name}` && !item.hint) { closeSlash(); return false; }
+    event.preventDefault(); chooseCommand(item.name); return true;
+  }
+  return false;
+}
+$('#slash-menu').addEventListener('mousedown', event => event.preventDefault());
+$('#slash-menu').addEventListener('click', event => { const item = event.target.closest('[data-command]'); if (item) chooseCommand(item.dataset.command); });
+$('#prompt').addEventListener('blur', () => setTimeout(closeSlash, 100));
+try { state.config = await api('/config'); renderConfig(); renderConversation(); await loadSessions(); ensureDraft(); schedulePoll(); } catch (error) { notice(error.message); }

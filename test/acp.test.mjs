@@ -14,7 +14,9 @@ function agent() {
         state.calls.push({ method, params });
         if (method === 'initialize') return { protocolVersion: 1, authMethods: [{ id: 'devin-browser', name: 'Log in with browser' }] };
         if (method === 'authenticate') return {};
-        if (method === 'session/new') return { sessionId: `remote-${state.calls.length}` };
+        if (method === 'session/new') { const sessionId = `remote-${state.calls.length}`; state.onNew?.(sessionId); return { sessionId, ...(state.newResult || {}) }; }
+        if (method === 'session/set_config_option') return state.setResult ? state.setResult(params) : {};
+        if (method === 'session/set_model' || method === 'session/set_mode') return {};
         if (method === 'session/prompt') return new Promise(resolve => state.prompts.push(resolve));
       },
       notify: (method, params) => { state.notices.push({ method, params }); if (method === 'session/cancel') state.prompts.shift()?.({ stopReason: 'cancelled' }); },
@@ -35,7 +37,7 @@ test('CLI auth uses the advertised browser method, no cloud API token', async t 
   cli.login('devin-browser'); assert.equal(cli.info().auth.state, 'pending'); await tick();
   assert.equal(cli.info().auth.state, 'authenticated');
   assert.deepEqual(fake.calls[1], { method: 'authenticate', params: { methodId: 'devin-browser' } });
-  assert.deepEqual(fake.calls[0].params.clientCapabilities, {});
+  assert.deepEqual(fake.calls[0].params.clientCapabilities, { session: { configOptions: { boolean: {} } } });
 });
 test('CLI streams separate turns, blocks overlapping prompts, surfaces tools', async t => {
   const { cli, fake } = await client(t);
@@ -96,4 +98,62 @@ test('stdio transport handles split JSON, concurrent replies and process failure
   child.stdout.write('{"jsonrpc":"2.0","id":2,"result":'); child.stdout.write('{"ok":true}}\n{"id":1,"result":{"ok":false}}\n');
   assert.deepEqual(await second, { ok: true }); assert.deepEqual(await first, { ok: false });
   const pending = transport.request('pending', {}); child.kill(); await assert.rejects(pending, /exited/);
+});
+
+const configOptions = () => [
+  { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'swe-1.6', options: [{ group: 'recommended', name: 'Recommended', options: [{ value: 'swe-1.6', name: 'SWE-1.6' }, { value: 'opus', name: 'Opus' }] }] },
+  { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'normal', options: [{ value: 'normal', name: 'Normal' }, { value: 'plan', name: 'Plan' }] },
+  { id: 'fast', name: 'Fast', type: 'boolean', currentValue: false }
+];
+test('draft session exposes Devin models, modes and slash commands before the first message', async t => {
+  const { cli, fake } = await client(t); fake.newResult = { configOptions: configOptions() };
+  // Commands may arrive before the session/new response is handled.
+  fake.onNew = sessionId => fake.handlers.onNotification({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'plan', description: 'Plan first', input: { hint: 'what to plan' } }, { name: 'compact', description: 'Compact context' }, { name: 'bad name!' }] } } });
+  const draft = await cli.prepare();
+  assert.equal(draft.ready, true);
+  assert.deepEqual(draft.controls.map(c => c.id), ['model', 'mode', 'fast']);
+  assert.equal(draft.controls[0].options[1].group, 'Recommended');
+  assert.deepEqual(draft.commands, [{ name: 'plan', description: 'Plan first', hint: 'what to plan' }, { name: 'compact', description: 'Compact context', hint: '' }]);
+  let current = configOptions();
+  fake.setResult = params => ({ configOptions: current = current.map(o => o.id === params.configId ? { ...o, currentValue: params.value } : o) });
+  await assert.rejects(cli.configure('draft', 'model', 'gpt-invented'), /offered/);
+  await assert.rejects(cli.configure('draft', 'fast', 'yes'), /offered/);
+  const changed = await cli.configure('draft', 'model', 'opus');
+  assert.equal(changed.controls[0].value, 'opus');
+  assert.deepEqual(fake.calls.at(-1), { method: 'session/set_config_option', params: { sessionId: 'remote-2', configId: 'model', value: 'opus' } });
+  await cli.configure('draft', 'fast', true);
+  assert.equal(fake.calls.at(-1).params.type, 'boolean');
+  // The first task reuses the prepared session, keeping the chosen model.
+  const session = await cli.create({ prompt: '/plan add login' });
+  assert.equal(fake.calls.filter(c => c.method === 'session/new').length, 1);
+  assert.equal(fake.calls.at(-1).params.sessionId, 'remote-2');
+  assert.deepEqual(fake.calls.at(-1).params.prompt, [{ type: 'text', text: '/plan add login' }]);
+  assert.equal(cli.get(session.session_id).controls[0].value, 'opus');
+  assert.equal(cli.get(session.session_id).commands.length, 2);
+  assert.equal(cli.draftInfo().ready, false);
+  cli.stop(session.session_id); await tick();
+});
+test('agent-driven config, mode and title updates reach the session', async t => {
+  const { cli, fake } = await client(t); fake.newResult = { configOptions: configOptions() };
+  const session = await cli.create({ prompt: 'task' });
+  const remoteId = fake.calls.find(call => call.method === 'session/prompt').params.sessionId;
+  const update = value => fake.handlers.onNotification({ method: 'session/update', params: { sessionId: remoteId, update: value } });
+  update({ sessionUpdate: 'config_option_update', configOptions: configOptions().map(o => o.id === 'mode' ? { ...o, currentValue: 'plan' } : o) });
+  update({ sessionUpdate: 'session_info_update', title: 'Login page' });
+  const visible = cli.get(session.session_id);
+  assert.equal(visible.controls[1].value, 'plan'); assert.equal(visible.title, 'Login page');
+  assert.equal('configOptions' in visible, false);
+  cli.stop(session.session_id); await tick();
+  await assert.rejects(cli.configure(session.session_id, 'mode', 'normal'), /ended/);
+});
+test('falls back to legacy ACP models and modes', async t => {
+  const { cli, fake } = await client(t);
+  fake.newResult = { models: { currentModelId: 'a', availableModels: [{ modelId: 'a', name: 'Model A' }, { modelId: 'b', name: 'Model B' }] }, modes: { currentModeId: 'normal', availableModes: [{ id: 'normal', name: 'Normal' }, { id: 'plan', name: 'Plan' }] } };
+  await cli.prepare();
+  await cli.configure('draft', 'model', 'b');
+  assert.deepEqual(fake.calls.at(-1), { method: 'session/set_model', params: { sessionId: 'remote-2', modelId: 'b' } });
+  await cli.configure('draft', 'mode', 'plan');
+  assert.deepEqual(fake.calls.at(-1), { method: 'session/set_mode', params: { sessionId: 'remote-2', modeId: 'plan' } });
+  fake.handlers.onNotification({ method: 'session/update', params: { sessionId: 'remote-2', update: { sessionUpdate: 'current_mode_update', currentModeId: 'normal' } } });
+  assert.deepEqual(cli.draftInfo().controls.map(c => c.value), ['b', 'normal']);
 });

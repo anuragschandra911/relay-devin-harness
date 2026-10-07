@@ -28,6 +28,16 @@ Local CLI sessions use `--permission-mode normal`. Permission requests emitted b
 
 For this first CLI integration, Relay's local conversation index and transcripts last for the connected server process. Refreshing the page preserves them. Disconnecting/reconnecting or restarting Relay loses that UI history; it does not revoke the CLI's saved sign-in. Sessions created by other CLI clients are not imported. Stop sends ACP cancellation; if Devin fails to end the turn within five seconds, Relay closes the shared CLI process, which also interrupts any other local sessions. Connection switching is blocked while a local prompt or sign-in is in progress.
 
+### Models, modes and slash commands (CLI mode)
+
+Relay shows whatever Devin advertises over ACP, the same way ACP editors do, so new models and commands appear without a Relay update.
+
+- **Model, mode and other settings.** When the CLI connects, Relay prepares a Devin session in the background so the composer can show Devin's selectors before your first message (model, mode such as Normal / Plan / Accept Edits, and any other options like reasoning level). Changes apply immediately and carry into the task. They can also be changed mid-session, including while Devin is working. Relay uses ACP session config options and falls back to the older `session/set_model` / `session/set_mode` methods for agents that only support those.
+- **Slash commands.** Type `/` in the composer to open Devin's command palette with descriptions and argument hints. Use ↑/↓ to move, Tab or Enter to pick, Esc to close. Commands are sent to Devin as normal prompts, as ACP specifies. Devin's ACP set includes `/plan`, `/ask`, `/compact`, `/context`, `/fast`, `/loop`, `/btw`, `/session-stats`, `/mcp` and `/bug`, plus your own skills. Terminal-only commands (for example `/theme`, `/copy`, `/mouse`) are not offered because Devin does not advertise them to ACP hosts.
+- **Default model.** Set `RELAY_DEVIN_MODEL` in `.env` (for example `opus`) to pass `--model` to `devin acp` for every new session.
+
+These controls are CLI-only. The Cloud API v3 connection does not expose model or command selection.
+
 ### Cloud API configuration
 
 Alternatively, copy `.env.example` to `.env`, populate `DEVIN_API_KEY` and `DEVIN_ORG_ID`, and restart. This explicitly stores the credentials on disk; `.env` is git-ignored. Keep it private. Environment credentials are read at startup; disconnecting clears the active connection until you reconnect or restart.

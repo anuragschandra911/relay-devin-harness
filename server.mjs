@@ -75,6 +75,17 @@ export function createServer({ apiKey = process.env.DEVIN_API_KEY, orgId = proce
         try {
           if (path === '/api/sessions' && req.method === 'GET') return respond(res, 200, await activeClient.list(url.searchParams.get('after')));
           if (path === '/api/sessions' && req.method === 'POST') return respond(res, 201, await activeClient.create(await body(req)));
+          if (path === '/api/cli/draft') {
+            if (mode !== 'cli') throw new ApiError(409, 'Models, modes and slash commands require a Devin CLI connection.');
+            if (req.method === 'GET') return respond(res, 200, activeClient.draftInfo());
+            if (req.method === 'POST') return respond(res, 200, await activeClient.prepare());
+          }
+          const configRoute = path.match(/^\/api\/sessions\/([\w-]+)\/config$/);
+          if (configRoute && req.method === 'POST') {
+            if (mode !== 'cli') throw new ApiError(409, 'Session settings require a Devin CLI connection.');
+            const input = await body(req);
+            return respond(res, 200, await activeClient.configure(configRoute[1], String(input.configId || ''), input.value));
+          }
           const match = path.match(/^\/api\/sessions\/([\w-]+)(\/messages)?$/);
           if (match) {
             const [, id, messages] = match;
